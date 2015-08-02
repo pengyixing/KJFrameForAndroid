@@ -15,7 +15,7 @@
  */
 package org.kymjs.kjframe.bitmap;
 
-import android.view.View;
+import android.graphics.Bitmap;
 
 /**
  * BitmapLibrary中的回调方法
@@ -25,14 +25,17 @@ import android.view.View;
  */
 public abstract class BitmapCallBack {
     /** 载入前回调 */
-    public void onPreLoad(final View view) {}
+    public void onPreLoad() {}
 
     /** bitmap载入完成将回调 */
-    public void onSuccess(final View view) {}
+    public void onSuccess(final Bitmap bitmap) {}
 
     /** bitmap载入失败将回调 */
     public void onFailure(final Exception e) {}
 
     /** bitmap载入完成不管成功失败 */
-    public void onFinish(final View view) {}
+    public void onFinish() {}
+
+    /** bitmap开始加载网络图片 */
+    public void onDoHttp() {}
 }

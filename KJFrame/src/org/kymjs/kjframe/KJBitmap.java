@@ -16,19 +16,19 @@
 package org.kymjs.kjframe;
 
 import java.io.File;
-import java.util.HashSet;
-import java.util.Set;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.util.List;
+import java.util.Vector;
 
 import org.kymjs.kjframe.bitmap.BitmapCallBack;
 import org.kymjs.kjframe.bitmap.BitmapConfig;
-import org.kymjs.kjframe.bitmap.helper.BitmapCreate;
-import org.kymjs.kjframe.bitmap.helper.BitmapHelper;
-import org.kymjs.kjframe.bitmap.helper.BitmapMemoryCache;
-import org.kymjs.kjframe.bitmap.helper.DiskCache;
-import org.kymjs.kjframe.http.core.KJAsyncTask;
-import org.kymjs.kjframe.http.core.KJAsyncTask.OnFinishedListener;
-import org.kymjs.kjframe.http.core.SimpleSafeAsyncTask;
-import org.kymjs.kjframe.utils.CipherUtils;
+import org.kymjs.kjframe.bitmap.DiskImageRequest;
+import org.kymjs.kjframe.bitmap.ImageDisplayer;
+import org.kymjs.kjframe.http.Cache;
+import org.kymjs.kjframe.http.HttpCallBack;
 import org.kymjs.kjframe.utils.DensityUtils;
 import org.kymjs.kjframe.utils.FileUtils;
 import org.kymjs.kjframe.utils.KJLoger;
@@ -36,88 +36,45 @@ import org.kymjs.kjframe.utils.StringUtils;
 import org.kymjs.kjframe.utils.SystemTool;
 
 import android.annotation.SuppressLint;
+import android.content.Context;
+import android.content.Intent;
+import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
+import android.net.Uri;
+import android.provider.MediaStore;
 import android.view.View;
 import android.widget.ImageView;
 
 /**
  * The BitmapLibrary's core classes<br>
- * <b>创建时间</b> 2014-7-11<br>
- * <b>最后修改</b> 2015-1-26<br>
+ * <b>创建时间</b> 2014-6-11<br>
+ * <b>最后修改</b> 2015-4-23<br>
  * 
  * @author kymjs (https://github.com/kymjs)
- * @version 2.3
+ * @version 2.4
  */
 public class KJBitmap {
 
-    private static KJBitmap instance;
+    private final BitmapConfig mConfig;
+    private final ImageDisplayer displayer;
 
-    /** 记录所有正在下载或等待下载的任务 */
-    private final Set<BitmapWorkerTask> taskCollection;
-    private final BitmapConfig config;
-    /** LRU缓存器 */
-    private final BitmapMemoryCache mMemoryCache;
-    private final DiskCache diskCache;
-    private BitmapCallBack callback;
+    private final List<View> doLoadingViews;
 
-    public static KJBitmap create() {
-        return create(new BitmapConfig());
+    public KJBitmap() {
+        this(new BitmapConfig());
+    }
+
+    public KJBitmap(BitmapConfig bitmapConfig) {
+        this.mConfig = bitmapConfig;
+        displayer = new ImageDisplayer(mConfig);
+        doLoadingViews = new Vector<View>(30);
     }
 
     /**
-     * 使用配置器创建KJBitmap
-     * 
-     * @param bitmapConfig
-     * @return
-     */
-    public synchronized static KJBitmap create(BitmapConfig bitmapConfig) {
-        if (instance == null) {
-            instance = new KJBitmap(bitmapConfig);
-        }
-        return instance;
-    }
-
-    private KJBitmap(BitmapConfig bitmapConfig) {
-        this.config = bitmapConfig;
-        taskCollection = new HashSet<BitmapWorkerTask>();
-        mMemoryCache = new BitmapMemoryCache(config.memoryCacheSize);
-        diskCache = new DiskCache(BitmapConfig.CACHEPATH,
-                config.memoryCacheSize * 8, config.isDEBUG);
-    }
-
-    /**
-     * 加载过程中图片不会闪烁加载方法
-     * 
-     * @param imageView
-     *            要显示图片的控件(ImageView设置src，普通View设置bg)
-     * @param imageUrl
-     *            图片的URL
-     */
-    public void displayNotTwink(View imageView, String imageUrl) {
-        displayNotTwink(imageView, imageUrl, 0, 0);
-    }
-
-    /**
-     * 加载过程中图片不会闪烁加载方法
-     * 
-     * @param imageView
-     *            要显示图片的控件(ImageView设置src，普通View设置bg)
-     * @param imageUrl
-     *            图片的URL
-     * @param width
-     *            图片的宽
-     * @param height
-     *            图片的高
-     */
-    public void displayNotTwink(View imageView, String imageUrl, int width,
-            int height) {
-        display(imageView, imageUrl, width, height);
-    }
-
-    /**
-     * 使用默认配置加载网络图片
+     * 使用默认配置加载网络图片(屏幕的一半显示图片)
      * 
      * @param imageView
      *            要显示图片的控件(ImageView设置src，普通View设置bg)
@@ -125,494 +82,458 @@ public class KJBitmap {
      *            图片的URL
      */
     public void display(View imageView, String imageUrl) {
-        display(imageView, imageUrl, 0, 0);
+        displayWithDefWH(imageView, imageUrl, null, null, null);
     }
 
     /**
-     * 显示网络图片
-     * 
      * @param imageView
-     *            要显示图片的控件
+     *            要显示的View
      * @param imageUrl
-     *            图片地址
+     *            网络图片地址
      * @param width
-     *            宽
+     *            要显示的图片的最大宽度
      * @param height
-     *            高
+     *            要显示图片的最大高度
      */
     public void display(View imageView, String imageUrl, int width, int height) {
-        display(imageView, imageUrl, width, height, null);
+        display(imageView, imageUrl, width, height, null, null, null);
     }
 
     /**
-     * 显示网络图片
      * 
      * @param imageView
-     *            要显示图片的控件
+     *            要显示的View
      * @param imageUrl
-     *            图片地址
-     * @param loadBitmap
-     *            载入过程中显示的图片
+     *            网络图片地址
+     * @param callback
+     *            加载过程的回调
      */
-    public void display(View imageView, String imageUrl, Bitmap loadBitmap) {
-        display(imageView, imageUrl, loadBitmap, 0, 0);
+    public void display(View imageView, String imageUrl, BitmapCallBack callback) {
+        displayWithDefWH(imageView, imageUrl, null, null, callback);
     }
 
     /**
-     * 显示网络图片
+     * 如果内存缓存有图片，则显示内存缓存的图片，否则显示默认图片
      * 
      * @param imageView
-     *            要显示图片的控件
+     *            要显示的View
      * @param imageUrl
-     *            图片地址
-     * @param loadingId
-     *            载入过程中显示的图片
+     *            网络图片地址
+     * @param defaultImage
+     *            如果没有内存缓存，则显示默认图片
      */
-    public void display(View imageView, String imageUrl, int loadingId) {
-        display(imageView, imageUrl, 0, 0, imageView.getResources()
-                .getDrawable(loadingId));
-    }
-
-    /**
-     * 显示网络图片
-     * 
-     * @param imageView
-     *            要显示图片的控件
-     * @param imageUrl
-     *            图片地址
-     * @param loadBitmap
-     *            图片载入过程中的显示
-     * @param width
-     *            图片宽度
-     * @param height
-     *            图片高度
-     */
-    public void display(View imageView, String imageUrl, Bitmap loadBitmap,
-            int width, int height) {
-        Drawable loadDrawable = null;
-        if (loadBitmap != null) {
-            loadDrawable = new BitmapDrawable(imageView.getResources(),
-                    loadBitmap);
+    public void displayCacheOrDefult(View imageView, String imageUrl,
+            int defaultImage) {
+        Bitmap cache = getMemoryCache(imageUrl);
+        if (cache == null) {
+            setViewImage(imageView, defaultImage);
+        } else {
+            setViewImage(imageView, cache);
         }
-        display(imageView, imageUrl, width, height, loadDrawable);
     }
 
     /**
-     * 显示网络图片
+     * @param imageView
+     *            要显示的View
+     * @param imageUrl
+     *            网络图片地址
+     * @param width
+     *            要显示的图片的最大宽度
+     * @param height
+     *            要显示图片的最大高度
+     * @param loadBitmap
+     *            加载中图片
+     */
+    public void display(View imageView, String imageUrl, int width, int height,
+            int loadBitmap) {
+        display(imageView, imageUrl, width, height, imageView.getResources()
+                .getDrawable(loadBitmap), null, null);
+    }
+
+    /**
      * 
      * @param imageView
-     *            要显示图片的控件
+     *            要显示的View
      * @param imageUrl
-     *            图片地址
-     * @param loadingId
-     *            图片载入过程中的显示
-     * @param width
-     *            图片宽度
-     * @param height
-     *            图片高度
+     *            网络图片地址
+     * @param loadBitmap
+     *            加载中的图片
      */
-    public void display(View imageView, String imageUrl, int loadingId,
-            int width, int height) {
+    public void displayWithLoadBitmap(View imageView, String imageUrl,
+            int loadBitmap) {
+        displayWithDefWH(imageView, imageUrl, imageView.getResources()
+                .getDrawable(loadBitmap), null, null);
+    }
+
+    /**
+     * 
+     * @param imageView
+     *            要显示的View
+     * @param imageUrl
+     *            网络图片地址
+     * @param errorBitmap
+     *            加载出错时设置的默认图片
+     */
+    public void displayWithErrorBitmap(View imageView, String imageUrl,
+            int errorBitmap) {
+        displayWithDefWH(imageView, imageUrl, null, imageView.getResources()
+                .getDrawable(errorBitmap), null);
+    }
+
+    /**
+     * 
+     * @param imageView
+     *            要显示的View
+     * @param imageUrl
+     *            网络图片地址
+     * @param errorBitmap
+     *            加载出错时设置的默认图片
+     */
+    public void displayLoadAndErrorBitmap(View imageView, String imageUrl,
+            int loadBitmap, int errorBitmap) {
+        Resources res = imageView.getResources();
+        displayWithDefWH(imageView, imageUrl, res.getDrawable(loadBitmap),
+                res.getDrawable(errorBitmap), null);
+    }
+
+    /**
+     * 如果不指定宽高，则使用默认宽高计算方法
+     * 
+     * @param imageView
+     *            要显示的View
+     * @param imageUrl
+     *            网络图片地址
+     * @param loadBitmap
+     *            加载中图片
+     * @param errorBitmap
+     *            加载失败的图片
+     * @param callback
+     *            加载过程的回调
+     */
+    public void displayWithDefWH(View imageView, String imageUrl,
+            Drawable loadBitmap, Drawable errorBitmap, BitmapCallBack callback) {
+        int w = imageView.getWidth();;
+        int h = imageView.getHeight();
+        if (w == 0) {
+            w = DensityUtils.getScreenW(imageView.getContext()) / 2;
+        }
+        if (h == 0) {
+            h = DensityUtils.getScreenH(imageView.getContext()) / 2;
+        }
+        display(imageView, imageUrl, w, h, loadBitmap, errorBitmap, callback);
+    }
+
+    /**
+     * @param imageView
+     *            要显示的View
+     * @param imageUrl
+     *            网络图片地址
+     * @param width
+     *            要显示的图片的最大宽度
+     * @param height
+     *            要显示图片的最大高度
+     * @param loadOrErrorBitmap
+     *            加载中或加载失败都显示这张图片
+     * @param callback
+     *            加载过程的回调
+     */
+    public void display(View imageView, String imageUrl, int loadOrErrorBitmap,
+            int width, int height, BitmapCallBack callback) {
         display(imageView, imageUrl, width, height, imageView.getResources()
-                .getDrawable(loadingId));
+                .getDrawable(loadOrErrorBitmap), imageView.getResources()
+                .getDrawable(loadOrErrorBitmap), callback);
     }
 
     /**
      * 显示网络图片(core)
      * 
      * @param imageView
-     *            要显示图片的控件
+     *            要显示的View
      * @param imageUrl
-     *            图片地址
-     * @param loadBitmap
-     *            图片载入过程中的显示
+     *            网络图片地址
      * @param width
-     *            图片宽度
+     *            要显示的图片的最大宽度
      * @param height
-     *            图片高度
+     *            要显示图片的最大高度
+     * @param loadBitmap
+     *            加载中图片
+     * @param errorBitmap
+     *            加载失败的图片
+     * @param callback
+     *            加载过程的回调
      */
-    private void display(View imageView, String imageUrl, int width,
-            int height, Drawable loadBitmap) {
+    public void display(View imageView, String imageUrl, int width, int height,
+            Drawable loadBitmap, Drawable errorBitmap, BitmapCallBack callback) {
         if (imageView == null) {
+            showLogIfOpen("imageview is null");
             return;
         }
         if (StringUtils.isEmpty(imageUrl)) {
+            showLogIfOpen("image url is empty");
             return;
         }
-        if (width == 0 || height == 0) {
-            int w = DensityUtils.getScreenW(imageView.getContext()) / 2;
-            imageView.measure(w, w);
-            if (imageView.getMeasuredWidth() != 0) {
-                w = imageView.getMeasuredWidth();
-            }
-            width = height = w;
-        }
-        boolean notTwink = false;
+
         if (loadBitmap == null) {
-            notTwink = true;
+            loadBitmap = new ColorDrawable(0xFFCFCFCF);
         }
-
-        config.setDefaultHeight(height);
-        config.setDefaultWidth(width);
-
-        cancle(imageView);
-
-        BitmapWorkerTask task = new BitmapWorkerTask(imageView, imageUrl,
-                loadBitmap, width, height, notTwink);
-        taskCollection.add(task);
-        task.execute();
+        if (errorBitmap == null) {
+            errorBitmap = new ColorDrawable(0xFFCFCFCF);
+        }
+        if (callback == null) {
+            callback = new BitmapCallBack() {};
+        }
+        doDisplay(imageView, imageUrl, width, height, loadBitmap, errorBitmap,
+                callback);
     }
 
-    /********************* 异步获取Bitmap并设置image的任务类 *********************/
-    private class BitmapWorkerTask extends SimpleSafeAsyncTask<Bitmap> {
+    /**
+     * 真正去加载一个图片
+     */
+    private void doDisplay(final View imageView, final String imageUrl,
+            int width, int height, final Drawable loadBitmap,
+            final Drawable errorBitmap, final BitmapCallBack callback) {
+        checkViewExist(imageView);
 
-        final View imageView;
-        final String imageUrl;
-        final Drawable loadBitmap;
-        final int w;
-        final int h;
-        boolean notTwink;
-        private Bitmap keyBitmap;
+        imageView.setTag(imageUrl);
 
-        // public BitmapWorkerTask(View imageView, String imageUrl,
-        // Bitmap loadBitmap, int w, int h, boolean notTwink) {
-        // this(imageView, imageUrl, new BitmapDrawable(
-        // imageView.getResources(), loadBitmap), w, h, notTwink);
-        // }
-
-        public BitmapWorkerTask(View imageView, String imageUrl,
-                Drawable loadBitmap, int w, int h, boolean notTwink) {
-            this.imageView = imageView;
-            this.imageUrl = imageUrl;
-            this.loadBitmap = loadBitmap;
-            this.w = w;
-            this.h = h;
-            this.notTwink = notTwink;
-        }
-
-        // 取消当前正在进行的任务
-        public boolean cancelTask() {
-            showLogIfOpen("task->" + this.imageUrl + "has been canceled");
-            return this.cancel(true);
-        }
-
-        @Override
-        protected void onPreExecuteSafely() throws Exception {
-            super.onPreExecuteSafely();
-            config.downloader.setImageCallBack(callback);
-            if (callback != null) {
-                callback.onPreLoad(imageView);
-            }
-            imageView.setTag(imageUrl);
-
-            keyBitmap = getBitmapFromCache(imageUrl);
-            if (keyBitmap == null) {
-                if (!notTwink && imageUrl.startsWith("http")) {
-                    setViewImage(imageView, loadBitmap);
+        BitmapCallBack mCallback = new BitmapCallBack() {
+            @Override
+            public void onPreLoad() {
+                if (callback != null) {
+                    callback.onPreLoad();
                 }
             }
-        }
 
-        @Override
-        protected Bitmap doInBackground() {
-            if (keyBitmap == null) {
-                keyBitmap = getBitmapFromNet(imageUrl, w, h);
-                if (keyBitmap != null) {
-                    putBitmapToMC(imageUrl, keyBitmap);
-                }
-            }
-            return keyBitmap;
-        }
-
-        @Override
-        protected void onPostExecuteSafely(Bitmap result, Exception e)
-                throws Exception {
-            super.onPostExecuteSafely(result, e);
-            if (result != null) {
+            @Override
+            public void onSuccess(Bitmap bitmap) {
                 if (imageUrl.equals(imageView.getTag())) {
-                    setViewImage(imageView, result);
+                    doSuccess(imageView, bitmap, loadBitmap);
                     if (callback != null) {
-                        callback.onSuccess(imageView);
+                        callback.onSuccess(bitmap);
                     }
                 }
-            } else {
+            }
+
+            @Override
+            public void onFailure(Exception e) {
+                doFailure(imageView, errorBitmap);
                 if (callback != null) {
-                    e = (e == null) ? new RuntimeException("bitmap not found")
-                            : e;
                     callback.onFailure(e);
                 }
             }
-            if (callback != null) {
-                callback.onFinish(imageView);
+
+            @Override
+            public void onFinish() {
+                try {
+                    doLoadingViews.remove(imageView);
+                } catch (Exception e) {
+                }
+                if (callback != null) {
+                    callback.onFinish();
+                }
             }
-            keyBitmap = null;
+
+            @Override
+            public void onDoHttp() {
+                super.onDoHttp();
+                if (callback != null) {
+                    callback.onDoHttp();
+                }
+            }
+        };
+
+        if (imageUrl.startsWith("http")) {
+            displayer.get(imageUrl, width, height, mCallback);
+        } else {
+            new DiskImageRequest().load(imageUrl, width, width, mCallback);
         }
     }
 
-    /********************* public preference method *********************/
+    private void doFailure(View view, Drawable errorImage) {
+        if (errorImage != null) {
+            setViewImage(view, errorImage);
+        }
+    }
 
     /**
-     * 从指定链接获取一张图片，必须放在线程中执行<br>
-     * 
-     * <b>注意：</b>这里有访问网络的请求，必须放在线程中执行<br>
-     * <b>注意：</b>如果宽高参数为0，显示图片默认大小，此时有可能会造成OOM<br>
-     * 
-     * @param imageUrl
-     *            图片对应的Url
-     * @param reqW
-     *            图片期望宽度，0为图片默认大小
-     * @param reqH
-     *            图片期望高度，0为图片默认大小
+     * 需要解释一下：如果在本地没有缓存的时候，会首先调用一次onSuccess(null)，此时返回的bitmap是null，
+     * 在这个时候我们去设置加载中的图片，当网络请求成功的时候，会再次调用onSuccess(bitmap)，此时才返回网络下载成功的bitmap
      */
-    public Bitmap loadBmpMustInThread(String imageUrl, int reqW, int reqH) {
-        Bitmap bmp = getBitmapFromCache(imageUrl);
-        if (bmp == null) {
-            bmp = getBitmapFromNet(imageUrl, reqW, reqH);
+    private void doSuccess(View view, Bitmap bitmap, Drawable defaultImage) {
+        if (bitmap != null) {
+            setViewImage(view, bitmap);
+        } else if (defaultImage != null) {
+            setViewImage(view, defaultImage);
         }
-        return bmp;
     }
 
     /**
-     * 从网络读取Bitmap<br>
-     * 
-     * <b>注意：</b>这里有网络访问，应该放在线程中调用<br>
-     * <b>注意：</b>如果宽高参数为0，显示图片默认大小，此时有可能会造成OOM<br>
+     * 移除一个缓存
      * 
      * @param url
-     *            图片地址Url
-     * @param reqW
-     *            图片期望宽度，0为默认大小
-     * @param reqH
-     *            图片期望高度，0为默认大小
+     *            哪条url的缓存
+     */
+    public void removeCache(String url) {
+        BitmapConfig.mCache.remove(url);
+    }
+
+    /**
+     * 已过期，请改用cleanCache()
+     */
+    @Deprecated
+    public void removeCacheAll() {
+        cleanCache();
+    }
+
+    /**
+     * 清空缓存
+     */
+    public void cleanCache() {
+        BitmapConfig.mCache.clear();
+    }
+
+    /**
+     * 获取缓存数据
+     * 
+     * @param url
+     *            哪条url的缓存
      * @return
      */
-    public Bitmap getBitmapFromNet(String url, int reqW, int reqH) {
-        Bitmap bmp = null;
-        // 调用加载器加载url中的图片
-        byte[] res = config.downloader.loadImage(url);
-        if (res != null) {
-            bmp = BitmapCreate.bitmapFromByteArray(res, 0, res.length, reqW,
-                    reqH);
-            if (bmp != null && url.startsWith("http")) {
-                putBitmapToDC(url, bmp);
-            }
-        }
-        return bmp;
-    }
-
-    /**
-     * 保存一张图片到本地
-     * 
-     * @param url
-     *            图片地址
-     * @param path
-     *            在本地的绝对路径
-     */
-    public void saveImage(String url, String path) {
-        saveImage(url, path, 0, 0, null);
-    }
-
-    /**
-     * 保存一张图片到本地
-     * 
-     * @param url
-     *            图片地址
-     * @param path
-     *            在本地的绝对路径
-     * @param cb
-     *            保存过程回调
-     */
-    public void saveImage(String url, String path, BitmapCallBack cb) {
-        saveImage(url, path, 0, 0, cb);
-    }
-
-    /**
-     * 保存一张图片到本地
-     * 
-     * @param url
-     *            图片地址
-     * @param path
-     *            在本地的绝对路径
-     * @param reqW
-     *            图片的宽度（0表示默认）
-     * @param reqH
-     *            图片的高度（0表示默认）
-     * @param cb
-     *            保存过程回调
-     */
-    public void saveImage(final String url, final String path, final int reqW,
-            final int reqH, final BitmapCallBack cb) {
-        if (cb != null)
-            cb.onPreLoad(null);
-
-        Bitmap bmp = getBitmapFromCache(url);
-        if (bmp == null) {
-            KJAsyncTask.setOnFinishedListener(new OnFinishedListener() {
-                @Override
-                public void onPostExecute() {
-                    if (cb != null) {
-                        cb.onSuccess(null);
-                        cb.onFinish(null);
-                    }
-                }
-            });
-            KJAsyncTask.execute(new Runnable() {
-                @Override
-                public void run() {
-                    Bitmap bmp = getBitmapFromNet(url, reqW, reqH);
-                    if (bmp == null && cb != null) {
-                        // cb.onFailure(new RuntimeException("download error"));
-                        // //不能在线程中调用
-                    } else {
-                        FileUtils.bitmapToFile(bmp, path);
-                    }
-                }
-            });
+    public byte[] getCache(String url) {
+        Cache cache = BitmapConfig.mCache;
+        cache.initialize();
+        Cache.Entry entry = cache.get(url);
+        if (entry != null) {
+            return entry.data;
         } else {
-            bmp = BitmapHelper.scaleWithWH(bmp, reqW, reqH);
-            showLogIfOpen("load image from cache");
-            boolean success = FileUtils.bitmapToFile(bmp, path);
-            if (cb != null) {
-                if (success) {
-                    cb.onSuccess(null);
-                } else {
-                    cb.onFailure(new RuntimeException("save error"));
+            return new byte[0];
+        }
+    }
+
+    /**
+     * 获取内存缓存
+     * 
+     * @param url
+     * @return
+     */
+    public Bitmap getMemoryCache(String url) {
+        return BitmapConfig.mMemoryCache.getBitmap(url);
+    }
+
+    /**
+     * 取消一个加载请求(拼写错误，请使用cancel(url))
+     * 
+     * @param url
+     */
+    @Deprecated
+    public void cancle(String url) {
+        displayer.cancel(url);
+    }
+
+    /**
+     * 取消一个加载请求
+     * 
+     * @param url
+     */
+    public void cancel(String url) {
+        displayer.cancel(url);
+    }
+
+    /**
+     * 保存一张图片到本地，并自动通知图库刷新
+     * 
+     * @param cxt
+     * @param url
+     *            网络图片链接
+     * @param path
+     *            保存到本地的绝对路径
+     */
+    public void saveImage(Context cxt, String url, String path) {
+        saveImage(cxt, url, path, true, null);
+    }
+
+    /**
+     * 保存一张图片到本地
+     * 
+     * @param url
+     *            网络图片链接
+     * @param path
+     *            保存到本地的绝对路径
+     * @param cb
+     *            保存过程监听器
+     */
+    public void saveImage(final Context cxt, String url, final String path,
+            final boolean isRefresh, HttpCallBack cb) {
+        if (cb == null) {
+            cb = new HttpCallBack() {
+                @Override
+                public void onSuccess(byte[] t) {
+                    super.onSuccess(t);
+                    if (isRefresh) {
+                        refresh(cxt, path);
+                    }
                 }
-                cb.onFinish(null);
+            };
+        }
+        byte[] data = getCache(url);
+        if (data.length == 0) {
+            new KJHttp().download(path, url, cb);
+        } else {
+            File file = new File(path);
+            cb.onPreStart();
+            File folder = file.getParentFile();
+            if (folder != null) {
+                folder.mkdirs();
+            }
+            if (!file.exists()) {
+                try {
+                    file.createNewFile();
+                } catch (IOException e1) {
+                    cb.onFailure(-1, e1.getMessage());
+                    return;
+                }
+            }
+            OutputStream os = null;
+            try {
+                os = new FileOutputStream(file);
+                os.write(data);
+                cb.onSuccess(data);
+                if (isRefresh) {
+                    refresh(cxt, path);
+                }
+            } catch (IOException e) {
+                cb.onFailure(-1, e.getMessage());
+            } finally {
+                FileUtils.closeIO(os);
+                cb.onFinish();
             }
         }
     }
 
     /**
-     * 从缓存查找Bitmap
+     * 刷新图库
      * 
-     * @param key
+     * @param cxt
+     * @param path
      */
-    public Bitmap getBitmapFromCache(String key) {
-        Bitmap bmp = getBitmapFromMC(key);
-        if (bmp == null) {
-            bmp = getBitmapFromDC(key);
+    public void refresh(Context cxt, String path) {
+        String name = "";
+        name = path.substring(path.lastIndexOf('/'));
+        try {
+            MediaStore.Images.Media.insertImage(cxt.getContentResolver(), path,
+                    name, null);
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
         }
-        return bmp;
-    }
-
-    /**
-     * 从内存缓存读取Bitmap
-     * 
-     * @param key
-     *            图片地址Url
-     * @return 如果没有key对应的value返回null
-     */
-    public Bitmap getBitmapFromMC(String key) {
-        Bitmap bmp = mMemoryCache.get(CipherUtils.md5(key));
-        if (bmp != null) {
-            showLogIfOpen("get bitmap from memory cache");
-        }
-        return bmp;
-    }
-
-    /**
-     * 添加bitmap到内存缓存
-     * 
-     * @param k
-     *            缓存的key
-     * @param v
-     *            要添加的bitmap
-     */
-    public void putBitmapToMC(String k, Bitmap v) {
-        mMemoryCache.put(CipherUtils.md5(k), v);
-    }
-
-    /**
-     * 从磁盘缓存读取Bitmap
-     * 
-     * @param key
-     *            图片地址Url
-     * @return 如果没有key对应的value返回null
-     */
-    public Bitmap getBitmapFromDC(String key) {
-        Bitmap bmp = diskCache.get(CipherUtils.md5(key));
-        if (bmp != null) {
-            showLogIfOpen("get bitmap from disk cache");
-        }
-        return bmp;
-    }
-
-    /**
-     * 加入磁盘缓存
-     * 
-     * @param imagePath
-     *            图片路径
-     * @param v
-     *            要保存的Bitmap
-     */
-    public void putBitmapToDC(String imagePath, Bitmap v) {
-        diskCache.put(CipherUtils.md5(imagePath), v);
-    }
-
-    /**
-     * 移除一个指定的图片缓存
-     * 
-     * @param key
-     */
-    public void removeCache(String key) {
-        key = CipherUtils.md5(key);
-        mMemoryCache.remove(key);
-        File dir = FileUtils.getSaveFolder(BitmapConfig.CACHEPATH);
-        File file = new File(dir, BitmapConfig.CACHE_FILENAME_PREFIX + key);
-        if (file.exists()) {
-            file.delete();
-        }
-    }
-
-    /**
-     * 清空图片缓存
-     */
-    public void removeCacheAll() {
-        mMemoryCache.removeAll();
-        diskCache.clearCache();
-        // File dir = FileUtils.getSaveFolder(BitmapConfig.CACHEPATH);
-        // for (File f : dir.listFiles()) {
-        // f.delete();
-        // }
-    }
-
-    /**
-     * 取消一个下载请求
-     * 
-     * @param view
-     */
-    public void cancle(View view) {
-        for (BitmapWorkerTask task : taskCollection) {
-            if (task.imageView.equals(view)) {
-                task.cancelTask();
-                taskCollection.remove(task);
-                break;
-            }
-        }
-    }
-
-    /**
-     * 取消全部下载
-     */
-    public void cancleAll() {
-        for (BitmapWorkerTask task : taskCollection) {
-            task.cancelTask();
-            taskCollection.remove(task);
-        }
-    }
-
-    /**
-     * 设置BitmapLibrary的回调监听器
-     * 
-     * @param callback
-     */
-    public void setCallback(BitmapCallBack callback) {
-        this.callback = callback;
+        // 最后通知图库更新
+        cxt.sendBroadcast(new Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri
+                .parse("file://" + path)));
     }
 
     /********************* private method *********************/
+
     @SuppressLint("NewApi")
+    @SuppressWarnings("deprecation")
     private void setViewImage(View view, Bitmap background) {
         if (view instanceof ImageView) {
             ((ImageView) view).setImageBitmap(background);
@@ -627,7 +548,16 @@ public class KJBitmap {
         }
     }
 
+    private void setViewImage(View view, int background) {
+        if (view instanceof ImageView) {
+            ((ImageView) view).setImageResource(background);
+        } else {
+            view.setBackgroundResource(background);
+        }
+    }
+
     @SuppressLint("NewApi")
+    @SuppressWarnings("deprecation")
     private void setViewImage(View view, Drawable background) {
         if (view instanceof ImageView) {
             ((ImageView) view).setImageDrawable(background);
@@ -641,8 +571,23 @@ public class KJBitmap {
     }
 
     private void showLogIfOpen(String msg) {
-        if (config.isDEBUG) {
-            KJLoger.debugLog(getClass().getName(), msg);
+        if (mConfig.isDEBUG) {
+            KJLoger.debugLog(getClass().getSimpleName(), msg);
         }
+    }
+
+    /**
+     * 检测一个View是否已经有任务了，如果是，则取消之前的任务
+     * 
+     * @param view
+     */
+    private void checkViewExist(View view) {
+        if (doLoadingViews.contains(view)) {
+            String url = (String) view.getTag();
+            if (!StringUtils.isEmpty(url)) {
+                cancle(url);
+            }
+        }
+        doLoadingViews.add(view);
     }
 }

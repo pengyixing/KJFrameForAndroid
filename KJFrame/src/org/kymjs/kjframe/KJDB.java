@@ -103,7 +103,7 @@ public class KJDB {
     public static KJDB create(boolean isDebug) {
         Context cxt = KJActivityStack.create().topActivity();
         if (cxt == null) {
-            throw new NullPointerException("you have to extends BaseActivity");
+            throw new NullPointerException("you have to extends KJActivity");
         }
         return create(cxt, isDebug);
     }
@@ -280,7 +280,7 @@ public class KJDB {
      * 
      * @param entities
      */
-    public void save(List<Object> entities) {
+    public void save(List<? extends Object> entities) {
         if (entities != null) {
             for (Object t : entities) {
                 save(t);
@@ -467,7 +467,6 @@ public class KJDB {
             T entity = CursorHelper.dbModel2Entity(dbModel, clazz);
             return loadManyToOne(entity, clazz);
         }
-
         return null;
     }
 

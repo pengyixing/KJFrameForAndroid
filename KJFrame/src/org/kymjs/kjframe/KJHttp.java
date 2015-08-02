@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014,KJFrameForAndroid Open Source Project,张涛.
+ * Copyright (c) 2014, Android Open Source Project,张涛.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,80 +15,93 @@
  */
 package org.kymjs.kjframe;
 
-import java.io.BufferedReader;
-import java.io.DataInputStream;
-import java.io.DataOutputStream;
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedList;
 import java.util.Map;
+import java.util.Queue;
+import java.util.Set;
+import java.util.concurrent.PriorityBlockingQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import javax.net.ssl.HttpsURLConnection;
-
+import org.kymjs.kjframe.http.Cache;
+import org.kymjs.kjframe.http.CacheDispatcher;
+import org.kymjs.kjframe.http.Delivery;
+import org.kymjs.kjframe.http.DownloadController;
+import org.kymjs.kjframe.http.DownloadTaskQueue;
+import org.kymjs.kjframe.http.FileRequest;
+import org.kymjs.kjframe.http.FormRequest;
 import org.kymjs.kjframe.http.HttpCallBack;
 import org.kymjs.kjframe.http.HttpConfig;
 import org.kymjs.kjframe.http.HttpParams;
-import org.kymjs.kjframe.http.core.CachedTask;
-import org.kymjs.kjframe.http.download.I_FileLoader;
-import org.kymjs.kjframe.http.download.SimpleDownloader;
-import org.kymjs.kjframe.utils.FileUtils;
+import org.kymjs.kjframe.http.JsonRequest;
+import org.kymjs.kjframe.http.NetworkDispatcher;
+import org.kymjs.kjframe.http.Request;
+import org.kymjs.kjframe.http.Request.HttpMethod;
+import org.kymjs.kjframe.utils.KJLoger;
 
 /**
+ * 本类工作流程： 每当发起一次Request，会对这个Request标记一个唯一值。<br>
+ * 并加入当前请求的Set中(保证唯一;方便控制)。<br>
+ * 同时判断是否启用缓存，若启用则加入缓存队列，否则加入执行队列。<br>
  * 
- * @author kymjs (https://github.com/kymjs)
+ * Note:<br>
+ * 整个KJHttp工作流程：采用责任链设计模式，由三部分组成，类似设计可以类比Handle...Looper...MessageQueue<br>
+ * 
+ * 1、KJHttp负责不停向NetworkQueue(或CacheQueue实际还是NetworkQueue， 具体逻辑请查看
+ * {@link CacheDispatcher})添加Request<br>
+ * 2、另一边由TaskThread不停从NetworkQueue中取Request并交给Network执行器(逻辑请查看
+ * {@link NetworkDispatcher} )，<br>
+ * 3、Network执行器将执行成功的NetworkResponse返回给TaskThead，并通过Request的定制方法
+ * {@link Request#parseNetworkResponse()}封装成Response，最终交给分发器 {@link Delivery}
+ * 分发到主线程并调用HttpCallback相应的方法
+ * 
+ * @author kymjs (https://www.kymjs.com/)
  */
 public class KJHttp {
-    public static final String BOUNDARY = "---------7d4a6d158c9"; // 定义http上传文件的数据分隔线
 
-    private enum Method {
-        UNKNOW, GET, POST, FILE
-    }
-
-    private HttpConfig httpConfig;
-    private I_FileLoader downloader;
+    // 请求缓冲区
+    private final Map<String, Queue<Request<?>>> mWaitingRequests = new HashMap<String, Queue<Request<?>>>();
+    // 请求的序列化生成器
+    private final AtomicInteger mSequenceGenerator = new AtomicInteger();
+    // 当前正在执行请求的线程集合
+    private final Set<Request<?>> mCurrentRequests = new HashSet<Request<?>>();
+    // 执行缓存任务的队列.
+    private final PriorityBlockingQueue<Request<?>> mCacheQueue = new PriorityBlockingQueue<Request<?>>();
+    // 需要执行网络请求的工作队列
+    private final PriorityBlockingQueue<Request<?>> mNetworkQueue = new PriorityBlockingQueue<Request<?>>();
+    // 请求任务执行池
+    private final NetworkDispatcher[] mTaskThreads;
+    // 缓存队列调度器
+    private CacheDispatcher mCacheDispatcher;
+    // 配置器
+    private HttpConfig mConfig;
 
     public KJHttp() {
-        this(null);
+        this(new HttpConfig());
     }
 
     public KJHttp(HttpConfig config) {
-        if (config == null) {
-            httpConfig = new HttpConfig();
-        } else {
-            this.httpConfig = config;
-        }
-    }
-
-    public HttpConfig getHttpConfig() {
-        return httpConfig;
+        this.mConfig = config;
+        mConfig.mController.setRequestQueue(this);
+        mTaskThreads = new NetworkDispatcher[HttpConfig.NETWORK_POOL_SIZE];
+        start();
     }
 
     /**
-     * 自定义配置
-     * 
-     * @param httpConfig
-     */
-    public void setHttpConfig(HttpConfig httpConfig) {
-        this.httpConfig = httpConfig;
-    }
-
-    /**
-     * 使用HttpURLConnection方式发起get请求
+     * 发起get请求
      * 
      * @param url
      *            地址
      * @param callback
      *            请求中的回调方法
      */
-    public void get(String url, HttpCallBack callback) {
-        get(url, null, callback);
+    public Request<byte[]> get(String url, HttpCallBack callback) {
+        return get(url, new HttpParams(), callback);
     }
 
     /**
-     * 使用HttpURLConnection方式发起get请求
+     * 发起get请求
      * 
      * @param url
      *            地址
@@ -97,277 +110,451 @@ public class KJHttp {
      * @param callback
      *            请求中的回调方法
      */
-    public void get(String url, HttpParams params, HttpCallBack callback) {
-        if (params != null) {
-            StringBuilder str = new StringBuilder(url);
-            str.append("?").append(params.toString());
-            url = str.toString();
-        }
-        new VolleyTask(Method.GET, url, null, callback).execute();
-    }
-
-    /**
-     * 使用HttpURLConnection方式发起post请求
-     * 
-     * @param url
-     *            地址
-     * @param params
-     *            参数集
-     * @param callback
-     *            请求中的回调方法
-     */
-    public void post(String url, HttpParams params, HttpCallBack callback) {
-        if (params != null) {
-            if (params.haveFile()) {
-                new VolleyTask(Method.FILE, url, params, callback).execute();
-            } else {
-                new VolleyTask(Method.POST, url, params, callback).execute();
-            }
-        } else {
-            new VolleyTask(Method.GET, url, null, callback).execute();
-        }
-    }
-
-    /**
-     * 文件下载
-     * 
-     * @param url
-     *            地址
-     * @param save
-     *            保存位置
-     * @param callback
-     */
-    public void download(String url, File save, HttpCallBack callback) {
-        download(url, save, new SimpleDownloader(httpConfig, callback),
-                callback);
-    }
-
-    /**
-     * 自定义文件下载器下载
-     * 
-     * @param url
-     *            地址
-     * @param save
-     *            保存位置
-     * @param downloader
-     *            下载器
-     * @param callback
-     */
-    public void download(String url, File save, I_FileLoader downloader,
+    public Request<byte[]> get(String url, HttpParams params,
             HttpCallBack callback) {
-        try {
-            if (!save.exists()) {
-                save.createNewFile();
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("save file can not create");
-        }
-        this.downloader = downloader;
-        httpConfig.savePath = save;
-        downloader.doDownload(url, true);
+        return get(url, params, true, callback);
     }
 
     /**
-     * 暂停下载
-     */
-    public void stopDownload() {
-        if (downloader != null) {
-            downloader.stop();
-        }
-    }
-
-    /**
-     * 是否已经停止下载
-     */
-    public boolean isStopDownload() {
-        if (downloader != null) {
-            return downloader.isStop();
-        } else {
-            return false;
-        }
-    }
-
-    /**
-     * 自带数据缓存功能，且各部分均可捕获异常，可处理{@link org.kymjs.kjlibrary.KJHttp.Method}
-     * 中定义的http请求类型
-     */
-    private class VolleyTask extends CachedTask<String, Object, String> {
-        private int respondCode = -1;
-        private String respondMsg = "";
-
-        private Method requestMethod;
-        private String uri;
-        private HttpParams params;
-        private HttpCallBack callback;
-
-        private VolleyTask(String cachePath, String key, long cacheTime) {
-            super(cachePath, key, cacheTime);
-        }
-
-        public VolleyTask(Method requestMethod, String uri, HttpParams params,
-                HttpCallBack callback) {
-            super(httpConfig.cachePath, uri + params.toString(),
-                    httpConfig.cacheTime);
-            this.requestMethod = requestMethod;
-            this.uri = uri;
-            this.params = params;
-            this.callback = callback;
-        }
-
-        @Override
-        protected void onPreExecuteSafely() throws Exception {
-            super.onPreExecuteSafely();
-            callback.onPreStart();
-        }
-
-        @Override
-        protected String doConnectNetwork(String... uris) throws Exception { // 参数uris留待以后使用
-            InputStream input = null;
-            BufferedReader reader = null;
-            StringBuilder respond = new StringBuilder();
-            try {
-                HttpURLConnection conn = openConnection(requestMethod, uri,
-                        params);
-                respondMsg = conn.getResponseMessage();
-                respondCode = conn.getResponseCode();
-                input = conn.getInputStream();
-                httpConfig.respondHeader = conn.getHeaderFields();
-                callback.onHttpConnection(conn);
-                reader = new BufferedReader(new InputStreamReader(input));
-                int len = 0;
-                char[] buf = new char[1024];
-                while ((len = reader.read(buf)) != -1) {
-                    respond.append(buf, 0, len);
-                }
-                conn.disconnect();
-            } finally {
-                FileUtils.closeIO(input, reader);
-            }
-            return respond.toString();
-        }
-
-        @Override
-        protected void onPostExecuteSafely(String result, Exception e)
-                throws Exception {
-            super.onPostExecuteSafely(result, e);
-            if (e == null) {
-                callback.onSuccess(result);
-            } else {
-                callback.onFailure(e, respondCode, respondMsg);
-            }
-            callback.onFinish();
-        }
-
-    }
-
-    /**
-     * Opens an {@link HttpURLConnection} with parameters.
+     * 发起get请求
      * 
      * @param url
-     * @return an open connection
-     * @throws IOException
+     *            地址
+     * @param params
+     *            参数集
+     * @param callback
+     *            请求中的回调方法
+     * @param useCache
+     *            是否缓存本条请求
      */
-    private HttpURLConnection openConnection(Method requestMethod, String uri,
-            HttpParams params) throws IOException {
-        URL url = new URL(uri);
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-
-        connection.setConnectTimeout(httpConfig.timeOut);
-        connection.setReadTimeout(httpConfig.timeOut);
-        connection.setUseCaches(false);
-        connection.setDoInput(true);
-
-        switch (requestMethod) {
-        case GET:
-            connection.setRequestMethod("GET");
-            break;
-        case POST:
-            connection.setRequestMethod("POST");
-            connection.setDoOutput(true);
-            connection.setInstanceFollowRedirects(true);
-            httpConfig.httpHeader.put("Content-Type",
-                    "application/x-www-form-urlencoded");
-            break;
-        case FILE:
-            connection.setRequestMethod("POST");
-            connection.setDoOutput(true);
-            connection.setInstanceFollowRedirects(true);
-            connection.setRequestProperty("connection", "Keep-Alive");
-            connection.setRequestProperty("Content-Type",
-                    "multipart/form-data; boundary=" + BOUNDARY);
-            break;
-        default:
-            new IllegalStateException("unsupported http request method");
-            break;
+    public Request<byte[]> get(String url, HttpParams params, boolean useCache,
+            HttpCallBack callback) {
+        if (params != null) {
+            url += params.getUrlParams();
         }
+        Request<byte[]> request = new FormRequest(HttpMethod.GET, url, params,
+                callback);
+        request.setShouldCache(useCache);
+        doRequest(request);
+        return request;
+    }
 
-        for (String headerName : httpConfig.httpHeader.keySet()) {
-            connection.addRequestProperty(headerName,
-                    httpConfig.httpHeader.get(headerName));
+    /**
+     * 发起post请求
+     * 
+     * @param url
+     *            地址
+     * @param params
+     *            参数集
+     * @param callback
+     *            请求中的回调方法
+     */
+    public Request<byte[]> post(String url, HttpParams params,
+            HttpCallBack callback) {
+        return post(url, params, true, callback);
+    }
+
+    /**
+     * 发起post请求
+     * 
+     * @param url
+     *            地址
+     * @param params
+     *            参数集
+     * @param callback
+     *            请求中的回调方法
+     * @param useCache
+     *            是否缓存本条请求
+     */
+    public Request<byte[]> post(String url, HttpParams params,
+            boolean useCache, HttpCallBack callback) {
+        Request<byte[]> request = new FormRequest(HttpMethod.POST, url, params,
+                callback);
+        request.setShouldCache(useCache);
+        doRequest(request);
+        return request;
+    }
+
+    /**
+     * 使用JSON传参的post请求
+     * 
+     * @param url
+     *            地址
+     * @param params
+     *            参数集
+     * @param callback
+     *            请求中的回调方法
+     */
+    public Request<byte[]> jsonPost(String url, HttpParams params,
+            HttpCallBack callback) {
+        return jsonPost(url, params, true, callback);
+    }
+
+    /**
+     * 使用JSON传参的post请求
+     * 
+     * @param url
+     *            地址
+     * @param params
+     *            参数集
+     * @param callback
+     *            请求中的回调方法
+     * @param useCache
+     *            是否缓存本条请求
+     */
+    public Request<byte[]> jsonPost(String url, HttpParams params,
+            boolean useCache, HttpCallBack callback) {
+        Request<byte[]> request = new JsonRequest(HttpMethod.POST, url, params,
+                callback);
+        request.setShouldCache(useCache);
+        doRequest(request);
+        return request;
+    }
+
+    /**
+     * 使用JSON传参的get请求
+     * 
+     * @param url
+     *            地址
+     * @param params
+     *            参数集
+     * @param callback
+     *            请求中的回调方法
+     */
+    public Request<byte[]> jsonGet(String url, HttpParams params,
+            HttpCallBack callback) {
+        Request<byte[]> request = new JsonRequest(HttpMethod.GET, url, params,
+                callback);
+        doRequest(request);
+        return request;
+    }
+
+    /**
+     * 使用JSON传参的get请求
+     * 
+     * @param url
+     *            地址
+     * @param params
+     *            参数集
+     * @param callback
+     *            请求中的回调方法
+     * @param useCache
+     *            是否缓存本条请求
+     */
+    public Request<byte[]> jsonGet(String url, HttpParams params,
+            boolean useCache, HttpCallBack callback) {
+        Request<byte[]> request = new JsonRequest(HttpMethod.GET, url, params,
+                callback);
+        request.setShouldCache(useCache);
+        doRequest(request);
+        return request;
+    }
+
+    /**
+     * 下载
+     * 
+     * @param storeFilePath
+     *            文件保存路径。注，必须是一个file路径不能是folder
+     * @param url
+     *            下载地址
+     * @param callback
+     *            请求中的回调方法
+     */
+    public DownloadTaskQueue download(String storeFilePath, String url,
+            HttpCallBack callback) {
+        FileRequest request = new FileRequest(storeFilePath, url, callback);
+        mConfig.mController.add(request);
+        request.setShouldCache(false);
+        doRequest(request);
+        return mConfig.mController;
+    }
+
+    /**
+     * 尝试唤醒一个处于暂停态的下载任务(不推荐)
+     * 
+     * @param storeFilePath
+     *            文件保存路径。注，必须是一个file路径不能是folder
+     * @param url
+     *            下载地址
+     * @deprecated 会造成莫名其妙的问题，建议直接再次调用download方法
+     */
+    @Deprecated
+    public void resumeTask(String storeFilePath, String url) {
+        DownloadController controller = mConfig.mController.get(storeFilePath,
+                url);
+        controller.resume();
+    }
+
+    /**
+     * 返回下载总控制器
+     * 
+     * @return
+     */
+    public DownloadController getDownloadController(String storeFilePath,
+            String url) {
+        return mConfig.mController.get(storeFilePath, url);
+    }
+
+    public void cancleAll() {
+        mConfig.mController.clearAll();
+    }
+
+    /**
+     * 执行一个自定义请求
+     * 
+     * @param request
+     */
+    public void doRequest(Request<?> request) {
+        request.setConfig(mConfig);
+        add(request);
+    }
+
+    /**
+     * 获取缓存数据
+     * 
+     * @param url
+     *            哪条url的缓存
+     * @return
+     */
+    public byte[] getCache(String url) {
+        Cache cache = mConfig.mCache;
+        cache.initialize();
+        Cache.Entry entry = cache.get(url);
+        if (entry != null) {
+            return entry.data;
+        } else {
+            return new byte[0];
         }
+    }
 
-        if (requestMethod == Method.POST && params != null) {
-            DataOutputStream out = null;
-            try {
-                out = new DataOutputStream(connection.getOutputStream());
-                out.writeBytes(params.toString());
-                out.flush();
-            } finally {
-                out.close();
+    /**
+     * 获取缓存数据
+     * 
+     * @param url
+     *            哪条url的缓存
+     * @param params
+     *            http请求中的参数集(KJHttp的缓存会连同请求参数一起作为一个缓存的key)
+     * @since 2.234以后有用
+     */
+    public byte[] getCache(String url, HttpParams params) {
+        if (params != null) {
+            url += params.getUrlParams();
+        }
+        return getCache(url);
+    }
+
+    /**
+     * 只有你确定cache是一个String时才可以使用这个方法，否则还是应该使用getCache(String);
+     * 
+     * @param url
+     *            url
+     * @param params
+     *            http请求中的参数集(KJHttp的缓存会连同请求参数一起作为一个缓存的key)
+     */
+    public String getStringCache(String url, HttpParams params) {
+        if (params != null) {
+            url += params.getUrlParams();
+        }
+        return new String(getCache(url));
+    }
+
+    /**
+     * 只有你确定cache是一个String时才可以使用这个方法，否则还是应该使用getCache(String);
+     * 
+     * @param url
+     * @return
+     */
+    public String getStringCache(String url) {
+        return new String(getCache(url));
+    }
+
+    /**
+     * 移除一个缓存
+     * 
+     * @param url
+     *            哪条url的缓存
+     */
+    public void removeCache(String url) {
+        mConfig.mCache.remove(url);
+    }
+
+    /**
+     * 清空缓存
+     */
+    public void cleanCache() {
+        mConfig.mCache.clear();
+    }
+
+    /**
+     * 已过期，请更换为cleanCache()
+     */
+    @Deprecated
+    public void removeAllDiskCache() {
+        cleanCache();
+    }
+
+    /**
+     * 已过期，请更换为removeCache()
+     */
+    @Deprecated
+    public void removeDiskCache(String uri, HttpParams params) {
+        mConfig.mCache.remove(uri);
+    }
+
+    /**
+     * 已过期，请更换为getConfig()
+     */
+    @Deprecated
+    public HttpConfig getHttpConfig() {
+        return getConfig();
+    }
+
+    public HttpConfig getConfig() {
+        return mConfig;
+    }
+
+    /**
+     * 已过期，请更换为setConfig()
+     */
+    @Deprecated
+    public void setHttpConfig(HttpConfig config) {
+        setConfig(config);
+    }
+
+    public void setConfig(HttpConfig config) {
+        this.mConfig = config;
+    }
+
+    /******************************** core method ****************************************/
+
+    /**
+     * 启动队列调度
+     */
+    private void start() {
+        stop();// 首先关闭之前的运行，不管是否存在
+        mCacheDispatcher = new CacheDispatcher(mCacheQueue, mNetworkQueue,
+                mConfig.mCache, mConfig.mDelivery, mConfig);
+        mCacheDispatcher.start();
+        // 构建线程池
+        for (int i = 0; i < mTaskThreads.length; i++) {
+            NetworkDispatcher tasker = new NetworkDispatcher(mNetworkQueue,
+                    mConfig.mNetwork, mConfig.mCache, mConfig.mDelivery);
+            mTaskThreads[i] = tasker;
+            tasker.start();
+        }
+    }
+
+    /**
+     * 停止队列调度
+     */
+    private void stop() {
+        if (mCacheDispatcher != null) {
+            mCacheDispatcher.quit();
+        }
+        for (int i = 0; i < mTaskThreads.length; i++) {
+            if (mTaskThreads[i] != null) {
+                mTaskThreads[i].quit();
             }
-        } else if (requestMethod == Method.FILE && params != null) {
-            DataInputStream in = null;
-            DataOutputStream out = null;
-            try {
-                out = new DataOutputStream(connection.getOutputStream());
-                byte[] end_data = ("\r\n--" + BOUNDARY + "--\r\n").getBytes();// 定义最后数据分隔线
+        }
+    }
 
-                StringBuilder sb = new StringBuilder();
-                for (Map.Entry<String, String> entry : params.urlParams
-                        .entrySet()) {
-                    sb.append("--");
-                    sb.append(BOUNDARY);
-                    sb.append("\r\nContent-Disposition: form-data; name=\"");
-                    sb.append(entry.getKey());
-                    sb.append("\"\r\n\r\n");
-                    sb.append(entry.getValue());
-                    out.write(sb.toString().getBytes());
-                    out.write("\r\n".getBytes());
-                    sb.delete(0, sb.length());
+    public void cancel(String url) {
+        synchronized (mCurrentRequests) {
+            for (Request<?> request : mCurrentRequests) {
+                if (url.equals(request.getTag())) {
+                    request.cancel();
                 }
+            }
+        }
+    }
 
-                for (Map.Entry<String, HttpParams.FileWrapper> entry : params.fileWraps
-                        .entrySet()) {
-                    sb.append("--")
-                            .append(BOUNDARY)
-                            .append("\r\nContent-Disposition: form-data;name=\"")
-                            .append(entry.getKey())
-                            .append("\";filename=\"")
-                            .append(entry.getValue().fileName)
-                            .append("\"\r\nContent-Type:application/octet-stream\r\n\r\n");
-                    byte[] data = sb.toString().getBytes();
-                    out.write(data);
-                    in = new DataInputStream(entry.getValue().inputStream);
-                    int bytes = 0;
-                    byte[] buf = new byte[1024];
-                    while ((bytes = in.read(buf)) != -1) {
-                        out.write(buf, 0, bytes);
+    /**
+     * 取消全部请求
+     */
+    public void cancelAll() {
+        synchronized (mCurrentRequests) {
+            for (Request<?> request : mCurrentRequests) {
+                request.cancel();
+            }
+        }
+    }
+
+    /**
+     * 向请求队列加入一个请求<br>
+     * Note:此处工作模式是这样的：KJHttp可以看做是一个队列类，而本方法不断的向这个队列添加request；另一方面，
+     * TaskThread不停的从这个队列中取request并执行。类似的设计可以参考Handle...Looper...MessageQueue的关系
+     */
+    public <T> Request<T> add(Request<T> request) {
+        if (request.getCallback() != null) {
+            request.getCallback().onPreStart();
+        }
+
+        // 标记该请求属于该队列，并将它添加到该组当前的请求。
+        request.setRequestQueue(this);
+        synchronized (mCurrentRequests) {
+            mCurrentRequests.add(request);
+        }
+        // 设置进程优先序列
+        request.setSequence(mSequenceGenerator.incrementAndGet());
+
+        // 如果请求不可缓存，跳过缓存队列，直接进入网络。
+        if (!request.shouldCache()) {
+            mNetworkQueue.add(request);
+            return request;
+        }
+
+        // 如果已经在mWaitingRequests中有本请求，则替换
+        synchronized (mWaitingRequests) {
+            String cacheKey = request.getCacheKey();
+            if (mWaitingRequests.containsKey(cacheKey)) {
+                // There is already a request in flight. Queue up.
+                Queue<Request<?>> stagedRequests = mWaitingRequests
+                        .get(cacheKey);
+                if (stagedRequests == null) {
+                    stagedRequests = new LinkedList<Request<?>>();
+                }
+                stagedRequests.add(request);
+                mWaitingRequests.put(cacheKey, stagedRequests);
+                if (HttpConfig.DEBUG) {
+                    KJLoger.debug(
+                            "Request for cacheKey=%s is in flight, putting on hold.",
+                            cacheKey);
+                }
+            } else {
+                mWaitingRequests.put(cacheKey, null);
+                mCacheQueue.add(request);
+            }
+            return request;
+        }
+    }
+
+    /**
+     * 将一个请求标记为已完成
+     */
+    public void finish(Request<?> request) {
+        synchronized (mCurrentRequests) {
+            mCurrentRequests.remove(request);
+        }
+
+        if (request.shouldCache()) {
+            synchronized (mWaitingRequests) {
+                String cacheKey = request.getCacheKey();
+                Queue<Request<?>> waitingRequests = mWaitingRequests
+                        .remove(cacheKey);
+                if (waitingRequests != null) {
+                    if (HttpConfig.DEBUG) {
+                        KJLoger.debug(
+                                "Releasing %d waiting requests for cacheKey=%s.",
+                                waitingRequests.size(), cacheKey);
                     }
-                    out.write("\r\n".getBytes()); // 多个文件时，二个文件之间加入这个
-                    sb.delete(0, sb.length());
+                    mCacheQueue.addAll(waitingRequests);
                 }
-                out.write(end_data);
-                out.flush();
-            } finally {
-                out.close();
             }
         }
-        // use caller-provided custom SslSocketFactory, if any, for HTTPS
-        if ("https".equals(url.getProtocol())
-                && httpConfig.sslSocketFactory != null) {
-            ((HttpsURLConnection) connection)
-                    .setSSLSocketFactory(httpConfig.sslSocketFactory);
-        }
-        return connection;
+    }
+
+    public void destroy() {
+        cancelAll();
+        stop();
     }
 }

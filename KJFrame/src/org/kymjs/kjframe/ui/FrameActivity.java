@@ -15,10 +15,10 @@
  */
 package org.kymjs.kjframe.ui;
 
-import android.app.Activity;
 import android.app.FragmentTransaction;
 import android.os.Bundle;
 import android.os.Handler;
+import android.support.v4.app.FragmentActivity;
 import android.view.View;
 import android.view.View.OnClickListener;
 
@@ -31,10 +31,13 @@ import android.view.View.OnClickListener;
  * @author kymjs (https://github.com/kymjs)
  * @version 1.8
  */
-public abstract class FrameActivity extends Activity implements
+public abstract class FrameActivity extends FragmentActivity implements
         OnClickListener, I_BroadcastReg, I_KJActivity, I_SkipActivity {
 
     public static final int WHICH_MSG = 0X37210;
+
+    protected KJFragment currentKJFragment;
+    protected SupportFragment currentSupportFragment;
 
     /**
      * 一个私有回调类，线程中初始化数据完成后的回调
@@ -101,6 +104,18 @@ public abstract class FrameActivity extends Activity implements
         widgetClick(v);
     }
 
+    protected <T extends View> T bindView(int id) {
+        return (T) findViewById(id);
+    }
+
+    protected <T extends View> T bindView(int id, boolean click) {
+        T view = (T) findViewById(id);
+        if (click) {
+            view.setOnClickListener(this);
+        }
+        return view;
+    }
+
     @Override
     public void registerBroadcast() {}
 
@@ -131,10 +146,51 @@ public abstract class FrameActivity extends Activity implements
      *            用来替换的Fragment
      */
     public void changeFragment(int resView, KJFragment targetFragment) {
+        if (targetFragment.equals(currentKJFragment)) {
+            return;
+        }
         FragmentTransaction transaction = getFragmentManager()
                 .beginTransaction();
-        transaction.replace(resView, targetFragment, targetFragment.getClass()
-                .getName());
+        if (!targetFragment.isAdded()) {
+            transaction.add(resView, targetFragment, targetFragment.getClass()
+                    .getName());
+        }
+        if (targetFragment.isHidden()) {
+            transaction.show(targetFragment);
+        }
+        if (currentKJFragment != null && currentKJFragment.isVisible()) {
+            transaction.hide(currentKJFragment);
+        }
+        currentKJFragment = targetFragment;
+        transaction.commit();
+    }
+
+    /**
+     * 用Fragment替换视图
+     * 
+     * @param resView
+     *            将要被替换掉的视图
+     * @param targetFragment
+     *            用来替换的Fragment
+     */
+    public void changeFragment(int resView, SupportFragment targetFragment) {
+        if (targetFragment.equals(currentSupportFragment)) {
+            return;
+        }
+        android.support.v4.app.FragmentTransaction transaction = getSupportFragmentManager()
+                .beginTransaction();
+        if (!targetFragment.isAdded()) {
+            transaction.add(resView, targetFragment, targetFragment.getClass()
+                    .getName());
+        }
+        if (targetFragment.isHidden()) {
+            transaction.show(targetFragment);
+        }
+        if (currentSupportFragment != null
+                && currentSupportFragment.isVisible()) {
+            transaction.hide(currentSupportFragment);
+        }
+        currentSupportFragment = targetFragment;
         transaction.commit();
     }
 }

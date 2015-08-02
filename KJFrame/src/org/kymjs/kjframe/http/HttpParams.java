@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014,KJFrameForAndroid Open Source Project,张涛.
+ * Copyright (c) 2014, 张涛.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,200 +13,280 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 package org.kymjs.kjframe.http;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.io.InputStream;
-import java.io.UnsupportedEncodingException;
-import java.util.LinkedList;
-import java.util.List;
+import java.io.OutputStream;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.apache.http.Header;
 import org.apache.http.HttpEntity;
-import org.apache.http.client.entity.UrlEncodedFormEntity;
-import org.apache.http.message.BasicNameValuePair;
-import org.kymjs.kjframe.utils.StringUtils;
+import org.apache.http.message.BasicHeader;
+import org.kymjs.kjframe.utils.FileUtils;
+
+import android.text.TextUtils;
+import android.util.Log;
 
 /**
- * Http请求中参数集<br>
- * <b>创建时间</b> 2014-8-7
- * 
- * @author kymjs (https://github.com/kymjs)
- * @version 1.3
+ * Http请求的参数集合
  */
-public class HttpParams {
-    public ConcurrentHashMap<String, String> urlParams;
-    public ConcurrentHashMap<String, FileWrapper> fileWraps;
+public class HttpParams implements HttpEntity {
 
-    private void init(int i) {
-        urlParams = new ConcurrentHashMap<String, String>(8);
-        fileWraps = new ConcurrentHashMap<String, FileWrapper>(i);
-    }
+    private final static char[] MULTIPART_CHARS = "-_1234567890abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+            .toCharArray();
+    private String mBoundary = null;
+    private final String NEW_LINE_STR = "\r\n";
+    private final String CONTENT_TYPE = "Content-Type: ";
+    private final String CONTENT_DISPOSITION = "Content-Disposition: ";
 
-    private void init() {
-        init(4);
-    }
+    /** 文本参数和字符集 */
+    private final String TYPE_TEXT_CHARSET = "text/plain; charset=UTF-8";
 
+    /** 字节流参数 */
+    private final String TYPE_OCTET_STREAM = "application/octet-stream";
     /**
-     * 构造器
-     * 
-     * <br>
-     * <b>说明</b> 为提高效率默认使用4个文件作为List大小
+     * 二进制参数
      */
+    private final byte[] BINARY_ENCODING = "Content-Transfer-Encoding: binary\r\n\r\n"
+            .getBytes();
+    /**
+     * 文本参数
+     */
+    private final byte[] BIT_ENCODING = "Content-Transfer-Encoding: 8bit\r\n\r\n"
+            .getBytes();
+
+    private final Map<String, String> urlParams = new ConcurrentHashMap<String, String>(
+            8);
+    private final Map<String, String> mHeaders = new HashMap<String, String>();
+    private final ByteArrayOutputStream mOutputStream = new ByteArrayOutputStream();
+    private boolean hasFile;
+    private String contentType = null;
+
+    private String jsonParams;
+
     public HttpParams() {
-        init();
+        this.mBoundary = generateBoundary();
+        mHeaders.put("cookie", HttpConfig.sCookie);
     }
 
     /**
-     * 构造器
+     * 生成分隔符
      * 
-     * @param i
-     *            Http请求参数中文件的数量
+     * @return
      */
-    public HttpParams(int i) {
-        init(i);
+    private final String generateBoundary() {
+        final StringBuffer buf = new StringBuffer();
+        final Random rand = new Random();
+        for (int i = 0; i < 30; i++) {
+            buf.append(MULTIPART_CHARS[rand.nextInt(MULTIPART_CHARS.length)]);
+        }
+        return buf.toString();
     }
 
-    public boolean haveFile() {
-        return (fileWraps.size() != 0);
+    public void putHeaders(final String key, final int value) {
+        this.putHeaders(key, value + "");
     }
 
-    public void put(String key, String value) {
-        if (key != null && value != null) {
-            urlParams.put(key, value);
-        } else {
-            throw new RuntimeException("key or value is NULL");
+    public void putHeaders(final String key, final String value) {
+        mHeaders.put(key, value);
+    }
+
+    public void put(final String key, final int value) {
+        this.put(key, value + "");
+    }
+
+    public void putJsonParams(String json) {
+        this.jsonParams = json;
+    }
+
+    /**
+     * 添加文本参数
+     * 
+     * @param key
+     * @param value
+     */
+    public void put(final String key, final String value) {
+        urlParams.put(key, value);
+        writeToOutputStream(key, value.getBytes(), TYPE_TEXT_CHARSET,
+                BIT_ENCODING, "");
+    }
+
+    /**
+     * 添加二进制参数, 例如Bitmap的字节流参数
+     * 
+     * @param paramName
+     * @param rawData
+     */
+    public void put(String paramName, final byte[] rawData) {
+        hasFile = true;
+        writeToOutputStream(paramName, rawData, TYPE_OCTET_STREAM,
+                BINARY_ENCODING, "KJFrameFile");
+    }
+
+    /**
+     * 添加文件参数,可以实现文件上传功能
+     * 
+     * @param key
+     * @param file
+     */
+    public void put(final String key, final File file) {
+        try {
+            hasFile = true;
+            writeToOutputStream(key,
+                    FileUtils.input2byte(new FileInputStream(file)),
+                    TYPE_OCTET_STREAM, BINARY_ENCODING, file.getName());
+        } catch (FileNotFoundException e) {
+            Log.e("kjframe", "HttpParams.put()-> file not found");
         }
     }
 
-    public void put(String key, byte[] file) {
-        put(key, new ByteArrayInputStream(file));
-    }
-
-    public void put(String key, File file) throws FileNotFoundException {
-        put(key, new FileInputStream(file), file.getName());
-    }
-
-    public void put(String key, InputStream value) {
-        put(key, value, "fileName");
-    }
-
-    public void put(String key, InputStream value, String fileName) {
-        if (key != null && value != null) {
-            fileWraps.put(key, new FileWrapper(value, fileName, null));
-        } else {
-            throw new RuntimeException("key or value is NULL");
+    /**
+     * 将数据写入到输出流中
+     * 
+     * @param key
+     * @param rawData
+     * @param type
+     * @param encodingBytes
+     * @param fileName
+     */
+    private void writeToOutputStream(String paramName, byte[] rawData,
+            String type, byte[] encodingBytes, String fileName) {
+        try {
+            writeFirstBoundary();
+            mOutputStream
+                    .write((CONTENT_TYPE + type + NEW_LINE_STR).getBytes());
+            mOutputStream
+                    .write(getContentDispositionBytes(paramName, fileName));
+            mOutputStream.write(encodingBytes);
+            mOutputStream.write(rawData);
+            mOutputStream.write(NEW_LINE_STR.getBytes());
+        } catch (final IOException e) {
+            e.printStackTrace();
         }
-
     }
 
-    public void remove(String key) {
-        urlParams.remove(key);
-        fileWraps.remove(key);
+    /**
+     * 参数开头的分隔符
+     * 
+     * @throws IOException
+     */
+    private void writeFirstBoundary() throws IOException {
+        mOutputStream.write(("--" + mBoundary + "\r\n").getBytes());
     }
 
-    public String getStringParams() {
+    private byte[] getContentDispositionBytes(String paramName, String fileName) {
+        StringBuilder stringBuilder = new StringBuilder();
+        stringBuilder.append("--").append(mBoundary).append("\r\n");
+        stringBuilder.append(CONTENT_DISPOSITION + "form-data; name=\""
+                + paramName + "\"");
+        if (!TextUtils.isEmpty(fileName)) {
+            stringBuilder.append("; filename=\"" + fileName + "\"");
+        }
+        return stringBuilder.append(NEW_LINE_STR).toString().getBytes();
+    }
+
+    @Override
+    public long getContentLength() {
+        return mOutputStream.toByteArray().length;
+    }
+
+    @Override
+    public Header getContentType() {
+        if (contentType != null) {
+            return new BasicHeader("Content-Type", contentType);
+        }
+        if (hasFile) {
+            return new BasicHeader("Content-Type",
+                    "multipart/form-data; boundary=" + mBoundary);
+        }
+        return null;
+    }
+
+    public void setContentType(String contentType) {
+        this.contentType = contentType;
+    }
+
+    @Override
+    public boolean isChunked() {
+        return false;
+    }
+
+    @Override
+    public boolean isRepeatable() {
+        return false;
+    }
+
+    @Override
+    public boolean isStreaming() {
+        return false;
+    }
+
+    @Override
+    public void writeTo(final OutputStream outstream) throws IOException {
+        if (hasFile) {
+            // 参数最末尾的结束符
+            final String endString = "--" + mBoundary + "--\r\n";
+            // 写入结束符
+            mOutputStream.write(endString.getBytes());
+            //
+            outstream.write(mOutputStream.toByteArray());
+        } else {
+            outstream.write(getUrlParams().substring(1).getBytes());
+        }
+    }
+
+    @Override
+    public void consumeContent() throws IOException,
+            UnsupportedOperationException {
+        if (isStreaming()) {
+            throw new UnsupportedOperationException(
+                    "Streaming entity does not implement #consumeContent()");
+        }
+    }
+
+    @Override
+    public InputStream getContent() {
+        return new ByteArrayInputStream(mOutputStream.toByteArray());
+    }
+
+    public StringBuilder getUrlParams() {
         StringBuilder result = new StringBuilder();
+        boolean isFirst = true;
         for (ConcurrentHashMap.Entry<String, String> entry : urlParams
                 .entrySet()) {
-            if (result.length() > 0) {
+            if (!isFirst) {
                 result.append("&");
+            } else {
+                result.append("?");
+                isFirst = false;
             }
             result.append(entry.getKey());
             result.append("=");
             result.append(entry.getValue());
         }
-        return result.toString();
+        return result;
     }
 
-    /*********************** httpClient method ************************************/
+    public String getJsonParams() {
+        return jsonParams;
+    }
+
+    public Map<String, String> getHeaders() {
+        return mHeaders;
+    }
 
     @Override
-    public String toString() {
-        StringBuilder result = new StringBuilder(getStringParams());
-
-        for (ConcurrentHashMap.Entry<String, FileWrapper> entry : fileWraps
-                .entrySet()) {
-            if (result.length() > 0) {
-                result.append("&");
-            }
-            result.append(entry.getKey());
-            result.append("=");
-            result.append("FILE");
-        }
-        return result.toString();
-    }
-
-    /**
-     * 获取参数集
-     */
-    public HttpEntity getEntity() {
-        HttpEntity entity = null;
-        if (!fileWraps.isEmpty()) {
-            MultipartEntity multipartEntity = new MultipartEntity();
-            for (ConcurrentHashMap.Entry<String, String> entry : urlParams
-                    .entrySet()) {
-                multipartEntity.addPart(entry.getKey(), entry.getValue());
-            }
-            int currentIndex = 0;
-            int lastIndex = fileWraps.entrySet().size() - 1;
-            for (ConcurrentHashMap.Entry<String, FileWrapper> entry : fileWraps
-                    .entrySet()) {
-                FileWrapper file = entry.getValue();
-                if (file.inputStream != null) {
-                    boolean isLast = currentIndex == lastIndex;
-                    if (file.contentType != null) {
-                        multipartEntity.addPart(entry.getKey(), file.fileName,
-                                file.inputStream, file.contentType, isLast);
-                    } else {
-                        multipartEntity.addPart(entry.getKey(), file.fileName,
-                                file.inputStream, isLast);
-                    }
-                }
-                currentIndex++;
-            }
-            entity = multipartEntity;
-        } else {
-            try {
-                entity = new UrlEncodedFormEntity(getParamsList(), "UTF-8");
-            } catch (UnsupportedEncodingException e) {
-                e.printStackTrace();
-            }
-        }
-        return entity;
-    }
-
-    protected List<BasicNameValuePair> getParamsList() {
-        List<BasicNameValuePair> lparams = new LinkedList<BasicNameValuePair>();
-        for (ConcurrentHashMap.Entry<String, String> entry : urlParams
-                .entrySet()) {
-            lparams.add(new BasicNameValuePair(entry.getKey(), entry.getValue()));
-        }
-        return lparams;
-    }
-
-    /**
-     * 封装一个文件参数
-     * 
-     * @author kymjs(kymjs123@gmail.com)
-     */
-    public static class FileWrapper {
-        public InputStream inputStream;
-        public String fileName;
-        public String contentType;
-
-        public FileWrapper(InputStream inputStream, String fileName,
-                String contentType) {
-            this.inputStream = inputStream;
-            this.contentType = contentType;
-            if (StringUtils.isEmpty(fileName)) {
-                this.fileName = "nofilename";
-            } else {
-                this.fileName = fileName;
-            }
-        }
+    public Header getContentEncoding() {
+        return null;
     }
 }

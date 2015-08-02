@@ -1,11 +1,10 @@
 package org.kymjs.kjframe.demo;
 
 import org.kymjs.kjframe.KJActivity;
-import org.kymjs.kjframe.demo.widget.KJListViewDemo;
 import org.kymjs.kjframe.demo.widget.KJSlidingMenuDemo;
-import org.kymjs.kjframe.demo.widget.NewListViewDemo;
 import org.kymjs.kjframe.demo.widget.ScaleImageDemo;
 import org.kymjs.kjframe.ui.BindView;
+import org.kymjs.kjframe.ui.ViewInject;
 
 import android.view.View;
 import android.widget.Button;
@@ -21,8 +20,6 @@ public class WidgetActivity extends KJActivity {
     private Button mBtn4;
     @BindView(id = R.id.button5, click = true)
     private Button mBtn5;
-    @BindView(id = R.id.button6, click = true)
-    private Button mBtn6;
 
     @Override
     public void setRootView() {
@@ -33,11 +30,10 @@ public class WidgetActivity extends KJActivity {
     public void initWidget() {
         super.initWidget();
         mBtn1.setText("侧滑SlidingMenu");
-        mBtn2.setText("KJListDemo和RoundImageView");
-        mBtn3.setText("KJScrollView不支持上下拉刷新");
+        mBtn2.setText("上下拉ListView，圆形imageView，万能适配器");
+        mBtn3.setText("KJScrollView请访问：https://github.com/KJFrame/KJBlog");
         mBtn4.setText("KJViewPager请访问：https://github.com/kymjs/KJController");
         mBtn5.setText("缩放旋转ImageView");
-        mBtn6.setText("新版上下拉控件");
     }
 
     @Override
@@ -48,17 +44,15 @@ public class WidgetActivity extends KJActivity {
             showActivity(aty, KJSlidingMenuDemo.class);
             break;
         case R.id.button2:
-            showActivity(aty, KJListViewDemo.class);
             break;
         case R.id.button3:
+            ViewInject.toast("请查看KJBlog项目");
             break;
         case R.id.button4:
+            ViewInject.toast("请查看KJController项目");
             break;
         case R.id.button5:
             showActivity(aty, ScaleImageDemo.class);
-            break;
-        case R.id.button6:
-            showActivity(aty, NewListViewDemo.class);
             break;
         }
     }

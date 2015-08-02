@@ -27,10 +27,8 @@ import android.app.ProgressDialog;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.DialogInterface.OnClickListener;
-import android.graphics.drawable.ColorDrawable;
 import android.view.View;
 import android.widget.DatePicker;
-import android.widget.PopupWindow;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -101,9 +99,10 @@ public class ViewInject {
     /**
      * 返回一个退出确认对话框
      */
-    public void getExitDialog(final Context context) {
+    public void getExitDialog(final Context context, String title,
+            OnClickListener l) {
         AlertDialog.Builder builder = new AlertDialog.Builder(context);
-        builder.setMessage("确定退出吗？");
+        builder.setMessage(title);
         builder.setCancelable(false);
         builder.setNegativeButton("取消", new OnClickListener() {
             @Override
@@ -111,13 +110,7 @@ public class ViewInject {
                 dialog.dismiss();
             }
         });
-        builder.setPositiveButton("确定", new OnClickListener() {
-            @Override
-            public void onClick(DialogInterface dialog, int which) {
-                dialog.dismiss();
-                KJActivityStack.create().AppExit(context);
-            }
-        });
+        builder.setPositiveButton("确定", l);
         builder.create();
         builder.show();
         builder = null;
@@ -137,13 +130,13 @@ public class ViewInject {
     /**
      * 用于创建PopupWindow封装一些公用属性
      */
-    private PopupWindow createWindow(View view, int w, int h, int argb) {
-        PopupWindow popupView = new PopupWindow(view, w, h);
-        popupView.setFocusable(true);
-        popupView.setBackgroundDrawable(new ColorDrawable(argb));
-        popupView.setOutsideTouchable(true);
-        return popupView;
-    }
+    // private PopupWindow createWindow(View view, int w, int h, int argb) {
+    // PopupWindow popupView = new PopupWindow(view, w, h);
+    // popupView.setFocusable(true);
+    // popupView.setBackgroundDrawable(new ColorDrawable(argb));
+    // popupView.setOutsideTouchable(true);
+    // return popupView;
+    // }
 
     /**
      * 返回一个日期对话框

@@ -2,6 +2,7 @@ package org.kymjs.kjframe.demo;
 
 import org.kymjs.kjframe.KJActivity;
 import org.kymjs.kjframe.ui.BindView;
+import org.kymjs.kjframe.ui.KJActivityStack;
 import org.kymjs.kjframe.utils.KJConfig;
 
 import android.view.View;
@@ -14,8 +15,6 @@ public class MainActivity extends KJActivity {
     private TextView mTvVersion;
     @BindView(id = R.id.button1, click = true)
     private Button mBtnUI;
-    @BindView(id = R.id.button2, click = true)
-    private Button mBtnPlugin;
     @BindView(id = R.id.button3, click = true)
     private Button mBtnBitmap;
     @BindView(id = R.id.button4, click = true)
@@ -26,6 +25,9 @@ public class MainActivity extends KJActivity {
     @Override
     public void setRootView() {
         setContentView(R.layout.activity_main);
+        if (!"org.kymjs.kjframe.demo".equals(getApplication().getPackageName())) {
+            KJActivityStack.create().AppExit(aty);
+        }
     }
 
     @Override
@@ -40,9 +42,6 @@ public class MainActivity extends KJActivity {
         switch (v.getId()) {
         case R.id.button1:
             showActivity(this, WidgetActivity.class);
-            break;
-        case R.id.button2:
-            showActivity(this, PluginActivity.class);
             break;
         case R.id.button3:
             showActivity(this, BitmapActivity.class);
